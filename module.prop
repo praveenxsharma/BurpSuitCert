@@ -1,6 +1,9 @@
-id=burpsuite-cert
+id=ksu.00000001
 name=BurpSuiteCert
-version=1.0
-versionCode=1
-author=Harith Dilshan (h4rithd.com)
-description=Injects BurpSuite CA certificates into Android trust store, including APEX support for Android 14+
+versionCode=202506171
+versionName=1.0
+description=Adds Burp Suite root CA to Android's certificate store for MITM HTTPS proxying. Supports Android 7-31 and KSU/ksu-next, Magisk, and standard rooted devices.
+author=Praveen Sharma
+supports=arm64-v8a,armeabi-v7a,x86,x86_64
+minKernel=4.4
+propVersion=2

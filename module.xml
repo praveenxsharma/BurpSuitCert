@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<module>
+    <id>ksu.00000001</id>
+    <versionCode>202506171</versionCode>
+    <versionName>1.0</versionName>
+    <name>BurpSuiteCert</name>
+    <description>Adds Burp Suite root CA to Android's certificate store for MITM HTTPS proxying. Supports Android 7-31 and KSU/ksu-next, Magisk, and standard rooted devices.</description>
+    <author>Praveen Sharma</author>
+    <targetApi>31</targetApi>
+    <minKernel>4.4</minKernel>
+    <support>arm64-v8a,armeabi-v7a,x86,x86_64</support>
+
+    <properties>
+        <name>ksu</name>
+        <version>minimum</version>
+    </properties>
+
+    <install>
+        <type>systemless</type>
+        <destination>system</destination>
+        <path>system/etc/security/cacerts</path>
+    </install>
+
+    <hooks>
+        <hook>
+            <name>post-fs-data</name>
+            <path>post-fs-data.sh</path>
+            <run_at>post-fs-data</run_at>
+        </hook>
+    </hooks>
+</module>

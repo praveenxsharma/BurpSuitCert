@@ -1,37 +1,50 @@
 #!/system/bin/sh
 
-exec > /data/local/tmp/BurpSuiteCert.log 2>&1
-set -x
+# BurpSuiteCert Module for KSU/ksu-next - Installs CA certificates
+# This script runs after filesystem is mounted
 
-echo "*******************************"
-echo "  BurpSuite CA Installer v1.0  "
-echo "                  by @h4rithd  "
-echo "*******************************"
+# Detect KSU/ksu-next environment
+KSU_PATH=""
+if [ -d "/data/adb/ksu" ] || [ -d "/data/ksu" ]; then
+    # KSU/ksu-next detected
+    KSU_PATH="/data/adb/ksu"
+elif [ -d "/data/adb/modules/ksu" ]; then
+    KSU_PATH="/data/adb/modules/ksu"
+elif [ -d "/data/adb/modules" ] && [ "$MAGISK" ]; then
+    # Fallback to Magisk if KSU not found
+    MODULE_PATH="/data/adb/modules/burpsuite-cert"
+    echo "BurpSuiteCert: Magisk environment detected, installing to Magisk location"
+fi
 
-MODDIR="${0%/*}"
-CUSTOM_CERTS="${MODDIR}/system/etc/security/cacerts"
-APEX_CA_DIR="/apex/com.android.conscrypt/cacerts"
-TMP_COPY="/data/local/tmp/burpca-h4rithd"
+# For KSU modules, we'll use APEX integration for modern Android versions
+if [ -n "$KSU_PATH" ]; then
+    MODULE_PATH="$KSU_PATH/modules/burpsuite-cert"
+    echo "BurpSuiteCert: KSU/ksu-next environment detected, installing to KSU location"
+else
+    # Standard rooted device or fallback
+    MODULE_PATH="/system/burp_cert"
+    echo "BurpSuiteCert: Installing to standard location"
+fi
 
-set_context() {
-    if [ "$(getenforce)" != "Enforcing" ]; then return 0; fi
-    local reference_path="$1"
-    local target_path="$2"
-    local default_context="u:object_r:system_file:s0"
-    local context
-    context=$(ls -Zd "$reference_path" | awk '{print $1}')
-    if [ -n "$context" ] && [ "$context" != "?" ]; then
-        chcon -R "$context" "$target_path"
-    else
-        chcon -R "$default_context" "$target_path"
-    fi
-}
+# Common installation logic
+if [ -d "$MODULE_PATH" ] ; then
+    # Certificates already installed
+    echo "BurpSuiteCert: Module already installed"
+else
+    echo "BurpSuiteCert: Installing CA certificates..."
 
-echo "[1/5] Setting ownership on custom certs..."
-chown -R 0:0 "$CUSTOM_CERTS"
+    # Create module directory
+    mkdir -p "$MODULE_PATH"
 
-echo "[2/5] Setting SELinux context on custom certs..."
-set_context /system/etc/security/cacerts "$CUSTOM_CERTS"
+    # Install the root CA certificate
+    cp /system/etc/security/cacerts/9a5ba575.0 "$MODULE_PATH/"
+
+    # Set permissions
+    chmod 644 "$MODULE_PATH/9a5ba575.0"
+    chown root:root "$MODULE_PATH/9a5ba575.0"
+
+    echo "BurpSuiteCert: Installation complete"
+fi
 
 if [ -d "$APEX_CA_DIR" ]; then
     echo "[3/5] Preparing tmpfs for CA cert override..."
