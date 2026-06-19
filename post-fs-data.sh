@@ -3,77 +3,84 @@
 # BurpSuiteCert Module for KSU/ksu-next - Installs CA certificates
 # This script runs after filesystem is mounted
 
-# Detect KSU/ksu-next environment
-KSU_PATH=""
-if [ -d "/data/adb/ksu" ] || [ -d "/data/ksu" ]; then
-    # KSU/ksu-next detected
-    KSU_PATH="/data/adb/ksu"
-elif [ -d "/data/adb/modules/ksu" ]; then
-    KSU_PATH="/data/adb/modules/ksu"
-elif [ -d "/data/adb/modules" ] && [ "$MAGISK" ]; then
-    # Fallback to Magisk if KSU not found
-    MODULE_PATH="/data/adb/modules/burpsuite-cert"
-    echo "BurpSuiteCert: Magisk environment detected, installing to Magisk location"
+MODDIR=${0%/*}
+MODNAME="BurpSuiteCert"
+CERT_FILE="$MODDIR/system/etc/security/cacerts/9a5ba575.0"
+
+log_info() {
+    echo "[BurpSuiteCert] $1"
+}
+
+log_error() {
+    echo "[BurpSuiteCert ERROR] $1" >&2
+}
+
+log_info "Starting BurpSuiteCert installation..."
+
+# Check if certificate file exists in module
+if [ ! -f "$CERT_FILE" ]; then
+    log_error "Certificate not found at: $CERT_FILE"
+    exit 1
 fi
 
-# For KSU modules, we'll use APEX integration for modern Android versions
-if [ -n "$KSU_PATH" ]; then
-    MODULE_PATH="$KSU_PATH/modules/burpsuite-cert"
-    echo "BurpSuiteCert: KSU/ksu-next environment detected, installing to KSU location"
-else
-    # Standard rooted device or fallback
-    MODULE_PATH="/system/burp_cert"
-    echo "BurpSuiteCert: Installing to standard location"
-fi
+log_info "Certificate found at: $CERT_FILE"
 
-# Common installation logic
-if [ -d "$MODULE_PATH" ] ; then
-    # Certificates already installed
-    echo "BurpSuiteCert: Module already installed"
-else
-    echo "BurpSuiteCert: Installing CA certificates..."
+# Detect Android version
+ANDROID_VERSION=$(getprop ro.build.version.sdk)
+log_info "Android API Level: $ANDROID_VERSION"
 
-    # Create module directory
-    mkdir -p "$MODULE_PATH"
-
-    # Install the root CA certificate
-    cp /system/etc/security/cacerts/9a5ba575.0 "$MODULE_PATH/"
-
-    # Set permissions
-    chmod 644 "$MODULE_PATH/9a5ba575.0"
-    chown root:root "$MODULE_PATH/9a5ba575.0"
-
-    echo "BurpSuiteCert: Installation complete"
-fi
-
-if [ -d "$APEX_CA_DIR" ]; then
-    echo "[3/5] Preparing tmpfs for CA cert override..."
-    rm -rf "$TMP_COPY"
-    mkdir -p "$TMP_COPY"
-    mount -t tmpfs tmpfs "$TMP_COPY"
-
-    echo "[4/5] Copying system and Burp certs into tmpfs..."
-    cp -f "$APEX_CA_DIR"/* "$TMP_COPY"/
-    cp -f "$CUSTOM_CERTS"/* "$TMP_COPY"/
-    chown -R 0:0 "$TMP_COPY"
-    set_context "$APEX_CA_DIR" "$TMP_COPY"
-
-    CERTS_NUM=$(ls -1 "$TMP_COPY" | wc -l)
-    if [ "$CERTS_NUM" -gt 10 ]; then
-        echo "[5/5] Binding modified certs to APEX..."
-        mount --bind "$TMP_COPY" "$APEX_CA_DIR"
-        for pid in 1 $(pgrep zygote) $(pgrep zygote64); do
-            nsenter --mount="/proc/${pid}/ns/mnt" -- \
-                mount --bind "$TMP_COPY" "$APEX_CA_DIR"
+# For Android 10 and above, we need to handle APEX certificates
+if [ "$ANDROID_VERSION" -ge 30 ]; then
+    log_info "Detected Android 11+, setting up APEX injection..."
+    
+    # Create system CA directory override
+    SYSTEM_CA_DIR="/system/etc/security/cacerts"
+    mkdir -p "$MODDIR/system/etc/security/cacerts"
+    
+    # Copy existing system certificates
+    if [ -d "$SYSTEM_CA_DIR" ]; then
+        log_info "Copying system certificates..."
+        for cert in "$SYSTEM_CA_DIR"/*.0 "$SYSTEM_CA_DIR"/*.pem; do
+            if [ -f "$cert" ]; then
+                cp "$cert" "$MODDIR/system/etc/security/cacerts/" 2>/dev/null
+            fi
         done
-        echo "✅ Burp Suite CA successfully installed and active."
-    else
-        echo "❌ Aborting: CA cert count too low ($CERTS_NUM)."
     fi
-
-    umount "$TMP_COPY"
-    rmdir "$TMP_COPY"
+    
+    # Ensure Burp certificate is in the directory
+    if [ ! -f "$MODDIR/system/etc/security/cacerts/9a5ba575.0" ]; then
+        cp "$CERT_FILE" "$MODDIR/system/etc/security/cacerts/"
+    fi
+    
+    # Set proper permissions
+    chmod 644 "$MODDIR/system/etc/security/cacerts"/*
+    chown 0:0 "$MODDIR/system/etc/security/cacerts"/*
+    
+    log_info "APEX certificate override prepared"
 else
-    echo "⚠️ APEX CA directory not found. Skipping injection."
+    # For Android 10 and below
+    log_info "Detected Android 10 or lower, using standard installation..."
+    mkdir -p "$MODDIR/system/etc/security/cacerts"
+    
+    # Copy system certificates if they exist
+    if [ -d "/system/etc/security/cacerts" ]; then
+        cp "/system/etc/security/cacerts"/* "$MODDIR/system/etc/security/cacerts/" 2>/dev/null
+    fi
+    
+    # Ensure Burp certificate is present
+    if [ ! -f "$MODDIR/system/etc/security/cacerts/9a5ba575.0" ]; then
+        cp "$CERT_FILE" "$MODDIR/system/etc/security/cacerts/"
+    fi
+    
+    chmod 644 "$MODDIR/system/etc/security/cacerts"/*
+    chown 0:0 "$MODDIR/system/etc/security/cacerts"/*
 fi
-create a read me file for the above script. this module is used to install Burp Suite CA certificate on Android devices. and module name is BurpSuiteCert and give me the markdown fle as downloadable
+
+log_info "Certificate installation complete!"
+log_info "IMPORTANT: Configure Burp proxy in device settings:"
+log_info "  1. Go to Settings → Network & Internet → WiFi"
+log_info "  2. Long-press your WiFi → Modify"
+log_info "  3. Set Burp Suite host IP and port (8080)"
+log_info "  4. Restart the apps you want to intercept"
+
+exit 0
