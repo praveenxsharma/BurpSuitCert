@@ -1,102 +1,96 @@
 #!/bin/bash
 
 # BurpSuiteCert Module Generator
-# Automatically converts your Burp certificate to a flashable KSU module
-# Usage: bash generate-module.sh [--cert path/to/cert] [--name ModuleName] [--author "Your Name"]
+# Converts Burp Suite CA certificate to KSU/ksu-next/Magisk module
 
 set -e
 
-# Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Configuration
-CERT_FILE=""
-MODULE_NAME="BurpSuiteCert"
-AUTHOR_NAME="Praveen Sharma"
-OUTPUT_ZIP="BurpSuiteCert.zip"
-WORK_DIR=$(mktemp -d)
-VERBOSE=0
-DRY_RUN=0
-CERT_HASH=""
-CERT_FILENAME=""
-
-# Functions
-print_header() {
-    echo -e "${BLUE}=== BurpSuiteCert Module Generator ===${NC}"
-}
-
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${GREEN}[Generator]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
+    echo -e "${RED}[Generator] ERROR:${NC} $1" >&2
+}
+
+log_warn() {
+    echo -e "${YELLOW}[Generator] WARN:${NC} $1"
 }
 
 log_verbose() {
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo -e "${BLUE}[DEBUG]${NC} $1"
-    fi
+    echo -e "${BLUE}[Generator]${NC} $1"
 }
 
-cleanup() {
-    if [ -d "$WORK_DIR" ]; then
-        log_verbose "Cleaning up temporary directory: $WORK_DIR"
-        rm -rf "$WORK_DIR"
-    fi
+show_help() {
+    cat << EOF
+BurpSuiteCert Module Generator
+
+Usage: $0 [OPTIONS]
+
+OPTIONS:
+  -c, --cert FILE           Path to Burp Suite certificate (DER, PEM, or P12)
+  -o, --output DIR          Output directory (default: current directory)
+  -n, --name NAME           Module name (default: BurpSuiteCert)
+  -a, --author NAME         Author name (default: Praveen Sharma)
+  -h, --help                Show this help message
+
+EXAMPLES:
+  $0 --cert burp-cert.der
+  $0 -c burp-cert.pem -o ./output
+  $0 -c burp-cert.p12 -n MyBurpCert -a "Your Name"
+
+EOF
+    exit 0
 }
 
-trap cleanup EXIT
+# Default values
+CERT_FILE=""
+OUTPUT_DIR="."
+MODULE_NAME="BurpSuiteCert"
+AUTHOR="Praveen Sharma"
+MODULE_ID="ksu.burpsuite"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --cert)
+        -c|--cert)
             CERT_FILE="$2"
             shift 2
             ;;
-        --name)
+        -o|--output)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -n|--name)
             MODULE_NAME="$2"
             shift 2
             ;;
-        --author)
-            AUTHOR_NAME="$2"
+        -a|--author)
+            AUTHOR="$2"
             shift 2
             ;;
-        --output)
-            OUTPUT_ZIP="$2"
-            shift 2
-            ;;
-        --verbose)
-            VERBOSE=1
-            shift
-            ;;
-        --dry-run)
-            DRY_RUN=1
-            shift
+        -h|--help)
+            show_help
             ;;
         *)
             log_error "Unknown option: $1"
+            echo "Use --help for usage information"
             exit 1
             ;;
     esac
 done
 
-print_header
-
-# Interactive input if cert not provided
+# Interactive mode if no certificate provided
 if [ -z "$CERT_FILE" ]; then
+    log_info "No certificate specified. Starting interactive mode..."
     echo ""
-    echo "📜 Burp Suite Certificate Input"
-    read -p "Enter path to your Burp certificate (DER/PEM/P12): " CERT_FILE
+    read -p "Enter path to your Burp certificate: " CERT_FILE
 fi
 
 # Validate certificate file
@@ -105,222 +99,296 @@ if [ ! -f "$CERT_FILE" ]; then
     exit 1
 fi
 
-log_info "Using certificate: $CERT_FILE"
+log_info "Certificate file: $CERT_FILE"
 
-# Detect certificate format
-detect_cert_format() {
-    local file="$1"
-    
-    # Check file headers
-    if file "$file" | grep -q "DER\|Certificate"; then
-        echo "DER"
-    elif file "$file" | grep -q "PEM\|ASCII"; then
-        echo "PEM"
-    elif file "$file" | grep -q "data"; then
-        # Could be DER or binary
-        if head -c 2 "$file" | od -An -tx1 | grep -q "30 82\|30 81"; then
-            echo "DER"
-        else
-            echo "BINARY"
-        fi
-    else
-        echo "UNKNOWN"
+# Check if OpenSSL is available
+if ! command -v openssl &> /dev/null; then
+    log_error "OpenSSL not found. Please install it first."
+    log_error "On Ubuntu/Debian: sudo apt-get install openssl"
+    log_error "On macOS: brew install openssl"
+    exit 1
+fi
+
+log_verbose "OpenSSL found"
+
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
+
+log_verbose "Created temporary directory: $TEMP_DIR"
+
+# Detect certificate format and convert to DER
+log_info "Detecting certificate format..."
+
+CERT_FORMAT="unknown"
+if file "$CERT_FILE" | grep -q "DER"; then
+    CERT_FORMAT="der"
+    log_verbose "Detected format: DER"
+elif openssl x509 -in "$CERT_FILE" -text -noout &>/dev/null 2>&1; then
+    CERT_FORMAT="pem"
+    log_verbose "Detected format: PEM"
+elif openssl pkcs12 -in "$CERT_FILE" -password pass: -passin pass: &>/dev/null 2>&1; then
+    CERT_FORMAT="p12"
+    log_verbose "Detected format: PKCS12"
+else
+    # Try reading as DER
+    if openssl x509 -inform DER -in "$CERT_FILE" -text -noout &>/dev/null 2>&1; then
+        CERT_FORMAT="der"
+        log_verbose "Detected format: DER (after retry)"
     fi
-}
+fi
 
-CERT_FORMAT=$(detect_cert_format "$CERT_FILE")
-log_info "Detected certificate format: $CERT_FORMAT"
+log_info "Certificate format: $CERT_FORMAT"
 
 # Convert to DER if needed
-CERT_DER="$WORK_DIR/burp-cert.der"
+DER_CERT="$TEMP_DIR/cert.der"
 
-if [ "$CERT_FORMAT" = "PEM" ]; then
-    log_info "Converting PEM to DER..."
-    if ! openssl x509 -inform PEM -in "$CERT_FILE" -outform DER -out "$CERT_DER" 2>/dev/null; then
-        log_error "Failed to convert PEM to DER. Check certificate format."
+case $CERT_FORMAT in
+    der)
+        cp "$CERT_FILE" "$DER_CERT"
+        log_verbose "Certificate already in DER format"
+        ;;
+    pem)
+        log_info "Converting PEM to DER..."
+        if ! openssl x509 -in "$CERT_FILE" -outform DER -out "$DER_CERT" 2>/dev/null; then
+            log_error "Failed to convert PEM to DER"
+            exit 1
+        fi
+        log_verbose "PEM conversion successful"
+        ;;
+    p12)
+        log_info "Converting PKCS12 to DER..."
+        if ! openssl pkcs12 -in "$CERT_FILE" -clcerts -nokeys -out "$TEMP_DIR/cert.pem" -password pass: -passin pass: 2>/dev/null; then
+            log_error "Failed to extract certificate from PKCS12"
+            exit 1
+        fi
+        if ! openssl x509 -in "$TEMP_DIR/cert.pem" -outform DER -out "$DER_CERT" 2>/dev/null; then
+            log_error "Failed to convert PKCS12 to DER"
+            exit 1
+        fi
+        log_verbose "PKCS12 conversion successful"
+        ;;
+    unknown)
+        log_error "Could not determine certificate format"
+        log_error "Supported formats: DER, PEM, PKCS12"
         exit 1
-    fi
-elif [ "$CERT_FORMAT" = "DER" ] || [ "$CERT_FORMAT" = "BINARY" ]; then
-    cp "$CERT_FILE" "$CERT_DER"
-else
-    log_error "Unable to determine certificate format"
-    exit 1
+        ;;
+esac
+
+# Generate OpenSSL hash for certificate filename
+log_info "Generating certificate hash..."
+CERT_HASH=$(openssl x509 -inform DER -in "$DER_CERT" -subject_hash_old -noout 2>/dev/null)
+if [ $? -ne 0 ]; then
+    log_warn "Failed to generate hash with old algorithm, trying standard algorithm..."
+    CERT_HASH=$(openssl x509 -inform DER -in "$DER_CERT" -subject_hash -noout 2>/dev/null)
 fi
 
-# Verify certificate
-log_info "Verifying certificate..."
-if ! openssl x509 -in "$CERT_DER" -inform DER -noout >/dev/null 2>&1; then
-    log_error "Certificate verification failed. Is it a valid X.509 certificate?"
-    exit 1
-fi
-
-# Get certificate hash
-log_verbose "Generating certificate hash..."
-if ! CERT_HASH=$(openssl x509 -in "$CERT_DER" -inform DER -noout -subject_hash_old 2>/dev/null); then
+if [ -z "$CERT_HASH" ]; then
     log_error "Failed to generate certificate hash"
     exit 1
 fi
 
-if [ -z "$CERT_HASH" ]; then
-    log_error "Certificate hash is empty - invalid certificate"
-    exit 1
-fi
-
 CERT_FILENAME="${CERT_HASH}.0"
-
 log_info "Certificate hash: $CERT_HASH"
 log_info "Certificate filename: $CERT_FILENAME"
 
-# Create module structure
-log_info "Creating module structure..."
-MODULE_DIR="$WORK_DIR/$MODULE_NAME"
+# Extract certificate subject
+CERT_SUBJECT=$(openssl x509 -inform DER -in "$DER_CERT" -subject -noout | sed 's/^subject=//' || echo "Unknown")
+log_verbose "Certificate subject: $CERT_SUBJECT"
+
+# Create module directory structure
+MODULE_DIR="$OUTPUT_DIR/$MODULE_NAME"
+log_info "Creating module directory: $MODULE_DIR"
+
+mkdir -p "$MODULE_DIR"
 mkdir -p "$MODULE_DIR/system/etc/security/cacerts"
 mkdir -p "$MODULE_DIR/META-INF/com/google/android"
 
-log_verbose "Module directory: $MODULE_DIR"
+log_verbose "Directory structure created"
 
-# Copy certificate
-cp "$CERT_DER" "$MODULE_DIR/system/etc/security/cacerts/$CERT_FILENAME"
-log_verbose "Certificate copied to module"
+# Copy certificate to module
+log_info "Installing certificate to module..."
+cp "$DER_CERT" "$MODULE_DIR/system/etc/security/cacerts/$CERT_FILENAME"
+chmod 644 "$MODULE_DIR/system/etc/security/cacerts/$CERT_FILENAME"
 
-# Try to copy system certificates
-log_info "Gathering system certificates..."
-if command -v adb &> /dev/null; then
-    log_verbose "ADB found, attempting to pull system certificates..."
-    adb pull /system/etc/security/cacerts/ "$MODULE_DIR/system/etc/security/cacerts/" 2>/dev/null || true
-fi
+log_verbose "Certificate installed: $MODULE_DIR/system/etc/security/cacerts/$CERT_FILENAME"
 
-# Create module.prop
-log_info "Generating module.prop..."
-CURRENT_DATE=$(date +%Y%m%d)
-cat > "$MODULE_DIR/module.prop" << EOF
-id=burpsuite.cert
-name=$MODULE_NAME
-versionCode=$CURRENT_DATE
-versionName=1.0
-author=$AUTHOR_NAME
-description=Installs Burp Suite CA certificate for HTTPS interception
-minKernel=4.4
-propVersion=2
-EOF
-
-log_verbose "module.prop created"
-
-# Create module.xml
-log_info "Generating module.xml..."
-cat > "$MODULE_DIR/module.xml" << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<module>
-    <id>burpsuite.cert</id>
-    <versionCode>1</versionCode>
-    <versionName>1.0</versionName>
-    <name>BurpSuiteCert</name>
-    <author>Praveen Sharma</author>
-    <targetApi>31</targetApi>
-    <minKernel>4.4</minKernel>
-    
-    <properties>
-        <name>ksu</name>
-        <version>minimum</version>
-    </properties>
-    
-    <hooks>
-        <hook>
-            <name>post-fs-data</name>
-            <path>post-fs-data.sh</path>
-            <run_at>post-fs-data</run_at>
-        </hook>
-    </hooks>
-</module>
-EOF
-
-log_verbose "module.xml created"
-
-# Create post-fs-data.sh with DYNAMIC certificate hash
+# Create post-fs-data.sh with correct hash
 log_info "Generating post-fs-data.sh..."
-cat > "$MODULE_DIR/post-fs-data.sh" << EOF
+cat > "$MODULE_DIR/post-fs-data.sh" << 'POSTFS_EOF'
 #!/system/bin/sh
 
 # BurpSuiteCert Module for KSU/ksu-next - Installs CA certificates
-# This script runs after filesystem is mounted
-# WARNING: This file is auto-generated. Do not edit manually.
+# This script is executed during module boot-up
 
-MODDIR=\${0%/*}
+MODDIR=${0%/*}
 MODNAME="BurpSuiteCert"
-CERT_HASH="$CERT_HASH"
-CERT_FILENAME="\${CERT_HASH}.0"
-CERT_FILE="\$MODDIR/system/etc/security/cacerts/\$CERT_FILENAME"
 
 log_info() {
-    echo "[BurpSuiteCert] \$1"
+    echo "[BurpSuiteCert] $1"
 }
 
 log_error() {
-    echo "[BurpSuiteCert ERROR] \$1" >&2
+    echo "[BurpSuiteCert ERROR] $1" >&2
 }
 
-log_info "Starting certificate injection..."
-log_info "Looking for certificate: \$CERT_FILENAME"
+log_info "Starting BurpSuiteCert certificate injection..."
 
-# Check if certificate file exists in module
-if [ ! -f "\$CERT_FILE" ]; then
-    log_error "Certificate not found at: \$CERT_FILE"
-    log_error "Available certificates:"
-    ls -la "\$MODDIR/system/etc/security/cacerts/" 2>/dev/null || log_error "Directory not found"
+# Get Android API level
+ANDROID_VERSION=$(getprop ro.build.version.sdk)
+log_info "Detected Android API level: $ANDROID_VERSION"
+
+# Define certificate directory
+CERT_SOURCE_DIR="$MODDIR/system/etc/security/cacerts"
+CERT_DEST_DIR="/system/etc/security/cacerts"
+
+# Check if source certificate exists
+if [ ! -d "$CERT_SOURCE_DIR" ]; then
+    log_error "Certificate directory not found at $CERT_SOURCE_DIR"
+    log_error "Module installation may be incomplete"
     exit 1
 fi
 
-log_info "Certificate found: \$CERT_FILENAME"
-
-# Detect Android version
-ANDROID_VERSION=\$(getprop ro.build.version.sdk)
-log_info "Android API Level: \$ANDROID_VERSION"
-
-# Ensure certificate directory exists
-CERT_DIR="\$MODDIR/system/etc/security/cacerts"
-if [ ! -d "\$CERT_DIR" ]; then
-    log_error "Certificate directory not found: \$CERT_DIR"
+# Count certificates in source
+CERT_COUNT=$(find "$CERT_SOURCE_DIR" -type f | wc -l)
+if [ "$CERT_COUNT" -eq 0 ]; then
+    log_error "No certificates found in $CERT_SOURCE_DIR"
     exit 1
 fi
 
-# Set proper permissions on all certificates
-log_info "Setting certificate permissions..."
-chmod 755 "\$CERT_DIR" 2>/dev/null || log_error "Failed to set directory permissions"
-for cert in "\$CERT_DIR"/*; do
-    if [ -f "\$cert" ]; then
-        chmod 644 "\$cert" 2>/dev/null || true
-        chown 0:0 "\$cert" 2>/dev/null || true
+log_info "Found $CERT_COUNT certificate(s) in module"
+
+# Create destination directory
+mkdir -p "$CERT_DEST_DIR" 2>/dev/null || log_error "Failed to create $CERT_DEST_DIR"
+
+# Copy all certificates from module to system
+log_info "Installing certificates..."
+for cert in "$CERT_SOURCE_DIR"/*; do
+    if [ -f "$cert" ]; then
+        cert_name=$(basename "$cert")
+        log_info "Installing certificate: $cert_name"
+        
+        # Copy certificate
+        if cp "$cert" "$CERT_DEST_DIR/$cert_name" 2>/dev/null; then
+            chmod 644 "$CERT_DEST_DIR/$cert_name" 2>/dev/null || true
+            chown 0:0 "$CERT_DEST_DIR/$cert_name" 2>/dev/null || true
+            log_info "✓ Successfully installed: $cert_name"
+        else
+            log_error "Failed to copy $cert_name"
+        fi
     fi
 done
 
-log_info "Certificate permissions configured"
+# Set proper permissions on directory
+chmod 755 "$CERT_DEST_DIR" 2>/dev/null || log_error "Failed to set directory permissions"
 
-# For Android 11+ (API 30+) - APEX handling
-if [ "\$ANDROID_VERSION" -ge 30 ]; then
-    log_info "Detected Android 11+ (API \$ANDROID_VERSION): KSU systemless module will handle APEX"
+# Verify installation
+log_info "Verifying certificate installation..."
+INSTALLED_COUNT=$(find "$CERT_DEST_DIR" -type f | wc -l)
+log_info "Total certificates in system store: $INSTALLED_COUNT"
+
+# For Android 11+ (API 30+) - APEX handling note
+if [ "$ANDROID_VERSION" -ge 30 ]; then
+    log_info "Detected Android 11+ (API $ANDROID_VERSION): Using KSU systemless module"
 else
-    log_info "Detected Android 10 or lower (API \$ANDROID_VERSION): Standard certificate installation"
+    log_info "Detected Android 10 or lower (API $ANDROID_VERSION): Standard certificate installation"
 fi
 
 log_info "✅ Certificate injection complete!"
-log_info ""
-log_info "NEXT: Configure WiFi proxy in device settings:"
-log_info "  1. Settings → Network & Internet → WiFi"
-log_info "  2. Long-press your WiFi network → Edit"
-log_info "  3. Expand Advanced options"
-log_info "  4. Proxy: Manual"
-log_info "  5. Proxy hostname: Your PC IP (running Burp)"
-log_info "  6. Proxy port: 8080"
-log_info "  7. Save and reconnect"
+log_info "Device may need reboot for certificate to appear in Settings"
 
 exit 0
-EOF
+POSTFS_EOF
 
 chmod +x "$MODULE_DIR/post-fs-data.sh"
-log_verbose "post-fs-data.sh created and made executable"
+log_verbose "post-fs-data.sh created"
 
-# Create META-INF/com/google/android/update-binary (required for KSU)
-cat > "$MODULE_DIR/META-INF/com/google/android/update-binary" << 'EOF'
+# Create install.sh
+log_info "Generating install.sh..."
+cat > "$MODULE_DIR/install.sh" << 'INSTALL_EOF'
+#!/system/bin/sh
+
+# BurpSuiteCert KSU/ksu-next Installation Script
+# This script is called during module flashing
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log() {
+    echo -e "${GREEN}[KSU-Install]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[KSU-Install] ERROR:${NC} $1" >&2
+}
+
+log "Validating BurpSuiteCert module..."
+
+if [ -z "$MODPATH" ]; then
+    MODPATH="/data/adb/modules/burpsuite-cert"
+fi
+
+log "Module path: $MODPATH"
+
+if [ ! -f "$MODPATH/post-fs-data.sh" ]; then
+    error "post-fs-data.sh not found"
+    exit 1
+fi
+
+if [ ! -f "$MODPATH/module.prop" ]; then
+    error "module.prop not found"
+    exit 1
+fi
+
+if [ ! -d "$MODPATH/system/etc/security/cacerts" ]; then
+    error "Certificate directory not found"
+    exit 1
+fi
+
+CERT_COUNT=$(find "$MODPATH/system/etc/security/cacerts" -type f | wc -l)
+if [ "$CERT_COUNT" -eq 0 ]; then
+    error "No certificates found in module"
+    exit 1
+fi
+
+log "✓ Module structure validated"
+log "✓ Found $CERT_COUNT certificate(s)"
+log "Certificate will be installed on next boot"
+log "Reboot your device to activate the module"
+
+chmod +x "$MODPATH/post-fs-data.sh" 2>/dev/null || true
+
+exit 0
+INSTALL_EOF
+
+chmod +x "$MODULE_DIR/install.sh"
+log_verbose "install.sh created"
+
+# Generate version code (YYYYMMDDHH format)
+VERSION_CODE=$(date +%Y%m%d%H)
+VERSION_NAME="1.0"
+
+# Create module.prop
+log_info "Generating module.prop..."
+cat > "$MODULE_DIR/module.prop" << MODULE_PROP_EOF
+id=$MODULE_ID
+name=$MODULE_NAME
+versionCode=$VERSION_CODE
+versionName=$VERSION_NAME
+description=Adds Burp Suite CA certificate for HTTPS interception. Supports KSU/ksu-next, Magisk, and rooted devices.
+author=$AUTHOR
+supports=arm64-v8a,armeabi-v7a,x86,x86_64
+minKernel=4.4
+propVersion=2
+MODULE_PROP_EOF
+
+log_verbose "module.prop created"
+
+# Create META-INF update-binary for KSU compatibility
+log_info "Creating META-INF structure..."
+cat > "$MODULE_DIR/META-INF/com/google/android/update-binary" << 'UPDATE_BINARY_EOF'
 #!/sbin/sh
 OUTFD=$2
 ZIPFILE=$3
@@ -331,101 +399,123 @@ ui_print() {
 }
 
 ui_print "Installing BurpSuiteCert..."
-ui_print "Extracting files..."
-
-unzip -o "$ZIPFILE" -d /tmp/burpsuite_install
-
-if [ $? -eq 0 ]; then
-  ui_print "Installation successful!"
-else
-  ui_print "Installation failed!"
-  exit 1
-fi
+ui_print "Certificate will be installed on next boot"
+ui_print "Reboot your device to activate the module"
 
 exit 0
-EOF
+UPDATE_BINARY_EOF
 
 chmod +x "$MODULE_DIR/META-INF/com/google/android/update-binary"
+log_verbose "META-INF structure created"
 
-# Create INSTALL_GUIDE.txt
-cat > "$MODULE_DIR/INSTALL_GUIDE.txt" << EOF
-=== BurpSuiteCert Module ===
+# Create updater-script (minimal, required by some systems)
+log_info "Creating updater-script..."
+cat > "$MODULE_DIR/META-INF/com/google/android/updater-script" << 'UPDATER_SCRIPT_EOF'
+install_module();
+UPDATER_SCRIPT_EOF
 
-INSTALLATION:
-1. Copy this ZIP to your phone
-2. Open KSU Manager → Modules → Install from storage
-3. Select this ZIP and tap Install
-4. Reboot your device
+log_verbose "updater-script created"
 
-CONFIGURATION:
+# Create module.xml for KSU
+log_info "Generating module.xml..."
+cat > "$MODULE_DIR/module.xml" << MODULE_XML_EOF
+<?xml version="1.0" encoding="utf-8"?>
+<manifest>
+    <properties>
+        <id>$MODULE_ID</id>
+        <name>$MODULE_NAME</name>
+        <version>$VERSION_NAME</version>
+        <versionCode>$VERSION_CODE</versionCode>
+        <author>$AUTHOR</author>
+        <description>Adds Burp Suite CA certificate for HTTPS interception</description>
+    </properties>
+    <compatible>
+        <minApi>24</minApi>
+        <maxApi>99</maxApi>
+    </compatible>
+</manifest>
+MODULE_XML_EOF
+
+log_verbose "module.xml created"
+
+# Create README for reference
+log_info "Creating README..."
+cat > "$MODULE_DIR/README.md" << 'README_EOF'
+# BurpSuiteCert Module
+
+Automatically generated module for Burp Suite CA certificate installation.
+
+## Installation
+
+1. Copy this folder to your KSU modules directory: `/data/adb/ksu/modules/`
+2. Or use KSU Manager → Modules → Install from storage
+3. Reboot your device
+4. Certificate will appear in Settings → Security → Certificate authorities
+
+## Proxy Configuration
+
 1. Settings → Network & Internet → WiFi
-2. Long-press your WiFi → Edit
+2. Long-press your WiFi network → Edit
 3. Expand Advanced options
-4. Set Proxy:
-   - Host: Your PC IP (where Burp is running)
-   - Port: 8080
-5. Save and reconnect
+4. Proxy: Manual
+5. Proxy hostname: Your PC's IP (running Burp Suite)
+6. Proxy port: 8080
+7. Save and reconnect
 
-VERIFICATION:
-1. Go to Settings → Security → Certificate authorities
-2. Look for "PortSwigger" or your certificate subject name
-3. Open Burp Suite on your PC
-4. Ensure Proxy → Settings → Proxy Listeners has 0.0.0.0:8080
-5. Open any app on your device (browser, social media, etc.)
-6. Check if traffic appears in Burp's HTTP history
+## Verification
 
-If no traffic appears:
-- Verify WiFi proxy is correctly configured in device settings
-- Restart the app you want to intercept
-- Check device system settings → Security → Certificate authorities (should show Burp cert)
-- Reboot the device
-- Verify Burp listener is running and accessible on 0.0.0.0:8080
+- Open Burp Suite on your PC
+- Configure listener on 0.0.0.0:8080
+- Open any app on your device
+- Check if traffic appears in Burp Suite HTTP history
 
-Generated: $(date)
-Certificate Hash: $CERT_HASH
-Certificate Filename: $CERT_FILENAME
-EOF
+README_EOF
 
-# If dry run, show what would be created
-if [ "$DRY_RUN" -eq 1 ]; then
-    log_warn "DRY RUN MODE - No files were created"
-    echo ""
-    echo "Would create the following structure:"
-    find "$MODULE_DIR" -type f | sort
-    exit 0
-fi
+log_verbose "README.md created"
 
-# Create ZIP
-log_info "Creating flashable ZIP module..."
-cd "$MODULE_DIR" || exit 1
-if ! zip -r -q "$WORK_DIR/$OUTPUT_ZIP" . -x "*.DS_Store" "*.git*" 2>/dev/null; then
+# Create the final ZIP module
+ZIP_NAME="${MODULE_NAME}.zip"
+ZIP_PATH="$OUTPUT_DIR/$ZIP_NAME"
+
+log_info "Creating flashable ZIP module: $ZIP_NAME"
+
+cd "$MODULE_DIR"
+if ! zip -r -q "$ZIP_PATH" .; then
     log_error "Failed to create ZIP file"
     exit 1
 fi
 cd - > /dev/null
 
-# Move to current directory
-if ! cp "$WORK_DIR/$OUTPUT_ZIP" "./$OUTPUT_ZIP"; then
-    log_error "Failed to copy ZIP to current directory"
+if [ ! -f "$ZIP_PATH" ]; then
+    log_error "ZIP file was not created"
     exit 1
 fi
 
-log_info "✅ Module created successfully!"
-echo ""
-echo -e "${GREEN}Module Details:${NC}"
-echo "  Name: $MODULE_NAME"
-echo "  Certificate: $CERT_FILENAME"
-echo "  Certificate Hash: $CERT_HASH"
-echo "  Author: $AUTHOR_NAME"
-echo "  Output: $OUTPUT_ZIP"
-echo "  Size: $(du -h "$OUTPUT_ZIP" | cut -f1)"
-echo ""
-echo -e "${BLUE}Next Steps:${NC}"
-echo "  1. Transfer '$OUTPUT_ZIP' to your Android device"
-echo "  2. Open KSU Manager → Modules → Install from storage"
-echo "  3. Select the ZIP and reboot"
-echo "  4. Verify certificate in Settings → Security → Certificate authorities"
-echo "  5. Configure WiFi proxy (see INSTALL_GUIDE.txt for details)"
-echo ""
+ZIP_SIZE=$(ls -lh "$ZIP_PATH" | awk '{print $5}')
+log_verbose "ZIP file created: $ZIP_SIZE"
 
-exit 0
+# Display summary
+echo ""
+echo "========================================"
+echo -e "${GREEN}✅ Module Generation Complete!${NC}"
+echo "========================================"
+echo -e "Module Name:      ${BLUE}$MODULE_NAME${NC}"
+echo -e "Certificate:      ${BLUE}$CERT_FILENAME${NC}"
+echo -e "Certificate Hash: ${BLUE}$CERT_HASH${NC}"
+echo -e "Output Location:  ${BLUE}$OUTPUT_DIR${NC}"
+echo -e "ZIP File:         ${BLUE}$ZIP_PATH${NC}"
+echo -e "ZIP Size:         ${BLUE}$ZIP_SIZE${NC}"
+echo "========================================"
+echo ""
+echo "Next steps:"
+echo "  1. Transfer $ZIP_NAME to your Android device"
+echo "  2. Open KSU Manager → Modules → Install from storage"
+echo "  3. Select $ZIP_NAME and tap Install"
+echo "  4. Reboot your device"
+echo "  5. Verify in Settings → Security → Certificate authorities"
+echo ""
+echo "Proxy Configuration:"
+echo "  - WiFi → Advanced options"
+echo "  - Set Proxy Host to your PC's IP"
+echo "  - Set Proxy Port to 8080"
+echo ""

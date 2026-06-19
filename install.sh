@@ -1,7 +1,7 @@
 #!/system/bin/sh
 
 # BurpSuiteCert KSU/ksu-next Installation Script
-# This script installs the module for KSU/ksu-next, Magisk, or standard rooted devices
+# This script is called during module flashing
 
 # Colors for output
 RED='\033[0;31m'
@@ -21,66 +21,52 @@ warn() {
     echo -e "${YELLOW}[KSU-Install] WARN:${NC} $1"
 }
 
-# Detect installation environment
-log "Detecting installation environment..."
+# The install.sh script doesn't actually install the certificate
+# That's handled by post-fs-data.sh during module boot-up
+# This script just validates the module structure
 
-# Check for KSU/ksu-next
-if [ -d "/data/adb/ksu" ] || [ -d "/data/ksu" ]; then
-    INSTALL_TYPE="ksu"
-    MODULE_DIR="/data/adb/ksu/modules/burpsuite-cert"
-elif [ -d "/data/adb/modules/ksu" ]; then
-    INSTALL_TYPE="ksu"
-    MODULE_DIR="/data/adb/modules/ksu/modules/burpsuite-cert"
-elif [ -d "/data/adb/modules" ] && [ "$MAGISK" ]; then
-    INSTALL_TYPE="magisk"
-    MODULE_DIR="/data/adb/modules/burpsuite-cert"
-    warn "KSU not found, falling back to Magisk installation"
-else
-    INSTALL_TYPE="standard"
-    MODULE_DIR="/system/burp_cert"
-    warn "KSU/Magisk not found, installing to standard rooted location"
+log "Validating BurpSuiteCert module..."
+
+# MODPATH is set by KSU/Magisk installer
+if [ -z "$MODPATH" ]; then
+    MODPATH="/data/adb/modules/burpsuite-cert"
 fi
 
-log "Detected installation type: $INSTALL_TYPE"
-log "Module will be installed to: $MODULE_DIR"
+log "Module path: $MODPATH"
 
-# Check if module is already installed
-if [ -d "$MODULE_DIR" ] && [ -f "$MODULE_DIR/9a5ba575.0" ]; then
-    warn "Module already installed at $MODULE_DIR"
-    log "Skipping installation..."
-    exit 0
-fi
-
-# Create module directory
-log "Creating module directory: $MODULE_DIR"
-mkdir -p "$MODULE_DIR"
-
-# Copy the certificate file
-log "Copying Burp Suite CA certificate..."
-if [ ! -f "/system/etc/security/cacerts/9a5ba575.0" ]; then
-    error "CA certificate not found at /system/etc/security/cacerts/9a5ba575.0"
+# Verify module structure
+if [ ! -f "$MODPATH/post-fs-data.sh" ]; then
+    error "post-fs-data.sh not found in module"
     exit 1
 fi
 
-cp "/system/etc/security/cacerts/9a5ba575.0" "$MODULE_DIR/"
-
-# Set permissions and ownership
-log "Setting permissions..."
-chmod 644 "$MODULE_DIR/9a5ba575.0"
-chown 0:0 "$MODULE_DIR/9a5ba575.0"
-
-# For KSU/ksu-next modules, additional setup may be needed
-if [ "$INSTALL_TYPE" = "ksu" ]; then
-    log "KSU/ksu-next detected - additional setup complete"
-    # KSU-specific setup can be added here
-elif [ "$INSTALL_TYPE" = "magisk" ]; then
-    log "Magisk detected - module ready for Magisk manager"
-else
-    log "Standard installation complete"
+if [ ! -f "$MODPATH/module.prop" ]; then
+    error "module.prop not found in module"
+    exit 1
 fi
 
-log "BurpSuiteCert installation complete!"
+if [ ! -d "$MODPATH/system/etc/security/cacerts" ]; then
+    error "Certificate directory not found in module"
+    exit 1
+fi
+
+CERT_COUNT=$(find "$MODPATH/system/etc/security/cacerts" -type f | wc -l)
+if [ "$CERT_COUNT" -eq 0 ]; then
+    error "No certificates found in module"
+    exit 1
+fi
+
+log "✓ Module structure validated"
+log "✓ Found $CERT_COUNT certificate(s)"
+log "✓ post-fs-data.sh found"
+log "✓ module.prop found"
+
+# Make scripts executable
+chmod +x "$MODPATH/post-fs-data.sh" 2>/dev/null || true
+chmod +x "$MODPATH/service.sh" 2>/dev/null || true
+
+log "BurpSuiteCert module validation complete"
+log "Certificate will be installed on next boot"
 log "Reboot your device to activate the module"
-log "Module ID: ksu.00000001 (for reference)"
 
 exit 0
