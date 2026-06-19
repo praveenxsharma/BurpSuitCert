@@ -110,13 +110,13 @@ detect_cert_format() {
     local file="$1"
     
     # Check file headers
-    if file "$file" | grep -q "DER"; then
+    if file "$file" | grep -q "DER\|Certificate"; then
         echo "DER"
     elif file "$file" | grep -q "PEM\|ASCII"; then
         echo "PEM"
     elif file "$file" | grep -q "data"; then
         # Could be DER or binary
-        if head -c 2 "$file" | od -An -tx1 | grep -q "30 82"; then
+        if head -c 2 "$file" | od -An -tx1 | grep -q "30 82\|30 81"; then
             echo "DER"
         else
             echo "BINARY"
