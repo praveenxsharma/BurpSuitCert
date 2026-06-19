@@ -111,6 +111,16 @@ fi
 
 log_verbose "OpenSSL found"
 
+# Check if zip is available
+if ! command -v zip &> /dev/null; then
+    log_error "zip command not found. Please install it first."
+    log_error "On Ubuntu/Debian: sudo apt-get install zip"
+    log_error "On macOS: brew install zip"
+    exit 1
+fi
+
+log_verbose "zip command found"
+
 # Create temporary directory
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
@@ -474,20 +484,27 @@ README_EOF
 log_verbose "README.md created"
 
 # Create the final ZIP module
+# Use absolute path for ZIP to avoid cd issues
 ZIP_NAME="${MODULE_NAME}.zip"
-ZIP_PATH="$OUTPUT_DIR/$ZIP_NAME"
+ZIP_PATH="$(cd "$OUTPUT_DIR" 2>/dev/null && pwd)/$ZIP_NAME"
+
+if [ -z "$ZIP_PATH" ]; then
+    ZIP_PATH="$OUTPUT_DIR/$ZIP_NAME"
+fi
 
 log_info "Creating flashable ZIP module: $ZIP_NAME"
+log_verbose "ZIP path: $ZIP_PATH"
 
-cd "$MODULE_DIR"
-if ! zip -r -q "$ZIP_PATH" .; then
+# Create ZIP with absolute path (no cd needed)
+if ! (cd "$MODULE_DIR" && zip -r -q "$ZIP_PATH" . 2>&1); then
     log_error "Failed to create ZIP file"
+    log_error "Check if 'zip' command is available"
     exit 1
 fi
-cd - > /dev/null
 
+# Verify ZIP was created
 if [ ! -f "$ZIP_PATH" ]; then
-    log_error "ZIP file was not created"
+    log_error "ZIP file was not created at: $ZIP_PATH"
     exit 1
 fi
 
